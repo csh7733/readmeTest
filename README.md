@@ -1,4 +1,4 @@
-![image](https://github.com/user-attachments/assets/fdfcf3f9-a387-4345-b04d-551d6be01d95)# PigeonStargram Backend
+# PigeonStargram Backend
 
 ## 📖 프로젝트 소개
 PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 한 소셜 미디어 클론 프로젝트입니다. V1(Version1)에서는 기능 구현에만 초점을 맞춰 다양한 기능을 구현하였으며, V2(Version2)에서는 실제 테스트를 통해 V1과 동일한 기능을 유지하면서도 최적화에 중점을 두어 개발되었습니다.
