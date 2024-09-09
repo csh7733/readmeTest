@@ -1,4 +1,4 @@
-# PigeonStargram Backend
+![image](https://github.com/user-attachments/assets/fdfcf3f9-a387-4345-b04d-551d6be01d95)# PigeonStargram Backend
 
 ## 📖 프로젝트 소개
 PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 한 소셜 미디어 클론 프로젝트입니다. V1(Version1)에서는 기능 구현에만 초점을 맞춰 다양한 기능을 구현하였으며, V2(Version2)에서는 실제 테스트를 통해 V1과 동일한 기능을 유지하면서도 최적화에 중점을 두어 개발되었습니다.
@@ -256,22 +256,31 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
 
   </details>
 
-
 ### 알림
 
 - **실시간 알림**: 다양한 이벤트(댓글, 답글, 좋아요, 알림 설정한 상대의 게시글 작성, 팔로우 등)에 대해 실시간으로 알림을 받을 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="실시간 알림 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/5000e639-3889-479f-a8e9-2a95ac53fd2f" alt="실시간 알림 이미지" width="45%" />
+    </p>
+
   </details>
 
 - **알림 관리**: 알림을 개별적으로 삭제하거나, 모두 삭제할 수 있으며, 알림을 클릭하면 해당 이벤트가 발생한 위치로 이동이 가능합니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="알림 관리 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/eefdab74-a1bd-4ce5-aba2-5d36fa3e9916" alt="알림 관리 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/7494275e-f147-4606-941f-c12de8df65f0" alt="알림 관리 이미지 2" width="45%" />
+    </p>
+
   </details>
+
 
 ### 검색
 
@@ -279,19 +288,25 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="유저 검색 및 자동완성 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/d972533d-dd85-49f2-81f8-34aeed955273" alt="유저 검색 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/79605c15-2956-4355-a939-efc584b124e1" alt="유저 검색 이미지 2" width="45%" />
+    </p>
+
   </details>
 
 - **검색 기록**: 검색한 키워드는 검색 기록으로 저장되며, 개별 삭제 및 모두 삭제가 가능합니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="검색 기록 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/74ef87c3-a84f-49b8-bed1-528675fcf3bf" alt="검색 기록 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/79bdb321-b43e-414b-a741-4facb412250e" alt="검색 기록 이미지 2" width="45%" />
+    </p>
+
   </details>
-
-
-
-
 
 
 ## 🚀 설치 및 실행 방법
