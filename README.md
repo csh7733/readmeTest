@@ -136,41 +136,66 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
 
 
 ### 게시글
-
 - **게시글 작성/수정/삭제**: 사용자는 이미지나 글을 포함한 게시글을 작성할 수 있으며, 게시글을 수정하거나 삭제할 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="게시글 작성/수정/삭제 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/309c8ad3-8b40-418d-8e23-11785a8a1ef2" alt="게시글 작성 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/dfd6fd24-f1ce-4805-a89f-1f57af97fb23" alt="게시글 작성 이미지 2" width="45%" />
+    </p>
+
   </details>
 
 - **댓글 및 답글 작성/수정/삭제**: 사용자는 게시글에 댓글과 답글을 작성할 수 있으며, 이를 수정하거나 삭제할 수 있습니다. 또한, 이전 댓글을 불러와서 확인할 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="댓글 및 답글 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/870d94d5-1539-4ab6-9e76-4eaeb469511c" alt="댓글 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/58dec37a-c433-40d0-b77b-559490dee427" alt="댓글 이미지 2" width="45%" />
+    </p>
+
   </details>
 
 - **유저 태그(@)**: 게시글, 댓글, 답글에서 유저를 @를 사용해 태그할 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="유저 태그 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/595c53f3-47ea-440f-9072-810d6ef4bf7d" alt="유저 태그 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/3874130f-0fb0-42b1-b129-160a3279ce85" alt="유저 태그 이미지 2" width="45%" />
+    </p>
+
   </details>
 
 - **좋아요/좋아요 취소**: 사용자는 게시글, 댓글, 답글에 좋아요를 누르거나 좋아요를 취소할 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="좋아요/좋아요 취소 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/b7aa0e41-22b8-44aa-839d-3617538666f7" alt="좋아요 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/7b91a23d-3680-44bc-906b-715fce23cede" alt="좋아요 이미지 2" width="45%" />
+    </p>
+
   </details>
 
 - **프로필 및 타임라인**: 다른 유저의 프로필에서 그 유저의 게시글을 확인할 수 있으며, 타임라인(홈)에서는 팔로우한 유저들의 최신 게시물을 볼 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="프로필 및 타임라인 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/a593c1f0-e298-48da-afc5-681b249672a1" alt="프로필 이미지" width="45%" />
+      <img src="https://github.com/user-attachments/assets/b315aa21-97c0-47b4-9a9a-f63c241bce29" alt="타임라인 이미지" width="45%" />
+    </p>
+
   </details>
+
   
 ### 채팅
 
@@ -178,36 +203,59 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="채팅 상대 선택 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/becc2bc8-c301-4544-a8d9-70bcd0b37f16" alt="채팅 상대 선택 이미지" width="45%" />
+    </p>
+
   </details>
 
 - **실시간 채팅**: 채팅에서 이미지나 글을 실시간으로 주고받을 수 있으며, 메시지 확인이 가능합니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="실시간 채팅 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/f5e1c4a5-0df5-49e5-885e-f1c17b931a16" alt="실시간 채팅 이미지" width="45%" />
+    </p>
+
   </details>
 
 - **읽지 않은 메시지 수**: 상대가 채팅방에 없을 때 메시지가 오면, 읽지 않은 메시지 수가 실시간으로 쌓이며 확인할 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="읽지 않은 메시지 수 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/17fe0e9c-8d19-4528-adb8-bc032cc4b0b3" alt="읽지 않은 메시지 수 이미지" width="45%" />
+    </p>
+
   </details>
 
 - **실시간 온라인 상태**: 유저의 온라인 상태를 설정하고 실시간으로 확인할 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="실시간 온라인 상태 확인 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/f2bafa1b-6c1e-4b51-8f3e-7ea82eef723b" alt="실시간 온라인 상태 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/074813b4-7d7b-4e1b-81fc-97a3c59ebc5e" alt="실시간 온라인 상태 이미지 2" width="45%" />
+    </p>
+
   </details>
 
 - **이전 채팅 불러오기**: 채팅 기록을 10개씩 불러와서 이전 대화를 확인할 수 있습니다.
   
   <details>
     <summary>📷 이미지와 함께 설명 보기</summary>
-    <img src="path_to_image.png" alt="이전 채팅 불러오기 기능">
+    
+    <p align="center">
+      <img src="https://github.com/user-attachments/assets/f5625120-86c6-41c7-9f1f-f670ffe13d6f" alt="이전 채팅 불러오기 이미지 1" width="45%" />
+      <img src="https://github.com/user-attachments/assets/8b1193ec-5cc0-4935-b025-cf0a70bd1bb3" alt="이전 채팅 불러오기 이미지 2" width="45%" />
+    </p>
+
   </details>
+
 
 ### 알림
 
