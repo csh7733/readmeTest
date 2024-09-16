@@ -1,6 +1,6 @@
-# PigeonStargram Backend
+# [PigeonStargram](https://pigeonstargram.com)  Backend
 
-## 📖 프로젝트 소개
+## 📖 프로젝트 소개(https://pigeonstargram.com)
 PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 한 소셜 미디어 클론 프로젝트입니다. [V1(Version1)](#-주요-기능-v1)에서는 기능 구현에만 초점을 맞춰 다양한 기능을 구현하였으며, [V2(Version2)](#-성능-개선-v2)에서는 실제 테스트를 통해 V1과 동일한 기능을 유지하면서도 최적화에 중점을 두어 개발되었습니다.
 
 ## 🛠 기술 스택
@@ -11,6 +11,7 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
 - **Testing**: JUnit, JMeter
 
 ## 📌 주요 기능 (V1)
+
 ### 유저
 
 - **회원가입/로그인/로그아웃/계정 탈퇴**: 구글을 통한 회원가입이 가능하며, 소셜 로그인 또는 직접 입력을 통한 로그인 기능을 제공합니다. 로그아웃 및 계정 탈퇴 기능도 포함되어 있습니다.
