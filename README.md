@@ -313,125 +313,406 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
 
 ### 공통1 (캐시)
 
-#### V1 문제점:
-- 모든 읽기와 쓰기 작업이 데이터베이스에서 이루어져 성능 저하와 지연이 발생했습니다.
+- **캐시** 도입으로 읽기 및 쓰기 작업 성능을 크게 개선했습니다.
 
-#### V2 해결점:
-- **Redis 캐시**를 도입하여 **look-aside** 방식으로 읽기 작업의 속도를 개선하고, **write-back** 및 **write-through** 방식으로 쓰기 작업의 성능을 최적화했습니다.
-- **복잡하지 않은 캐시**는 애노테이션 기반으로 관리하였고, **복잡한 자료구조 캐시**는 수동으로 구현하여 최적화하였습니다.
-- **Write-back 캐시 관리**: LRU 전략에 따라 일정 주기로 캐시에서 오래된 데이터를 데이터베이스에 플러시했습니다. 자주 조회되는 데이터는 캐시에서 계속 사용해 **starvation**이 발생할 수 있으므로, 체크포인트 시점에 모든 데이터를 데이터베이스에 플러시하여 데이터베이스와의 일관성을 유지합니다.
+  <details>
+    <summary>🔧 문제점 및 성능 개선 보기</summary>
+  
+    #### V1 문제점:
+    - 모든 읽기와 쓰기 작업이 데이터베이자스에서 이루어져 성능 저하와 지연이 발생했습니다.
+  
+    #### V2 해결점:
+  
+    - **단순 엔티티 캐시**(예: **Post 엔티티**와 같은 경우)는 **애노테이션 기반**으로 처리하여 캐싱 했고, **Set, Hash**와 같은 **복잡한 자료구조 캐시**는 수동으로 구현하여 성능을 최적화했습니다.
+      <details>
+      <summary>자세히 보기</summary>
+      
+        **단순 엔티티 캐시**(예: **Post 엔티티**)
 
-<details>
-  <summary>🔧 성능 개선 보기</summary>
+        단순 엔티티 캐시는 애노테이션 기반으로 처리하여 캐싱합니다. 예를 들어, `Post` 엔티티의 경우 다음과 같이 `@Cacheable` 애노테이션을 사용하여 캐싱을 구현할 수 있습니다:
+      
+        ```java
+        @Cacheable(value = POST,
+                   key = "T(com.pigeon_stargram.sns_clone.constant.CacheConstants).POST_ID + '_' + #postId")
+        @Transactional(readOnly = true)
+        public Post findById(Long postId) {
+            return repository.findById(postId)
+                     .orElseThrow(() -> new PostNotFoundException(POST_NOT_FOUND_ID));
+        }
+        ```
+        ### 복잡한 자료구조 캐시 (예: postId Set)
 
-  TODO
+        복잡한 자료구조 캐시는 수동으로 구현하여 성능을 최적화합니다. 예를 들어, `postId Set`을 캐시할 때는 다음과 같이 구현할 수 있습니다:
+        
+        ```java
+        @Transactional(readOnly = true)
+        @Override
+        public List<Long> findPostIdByUserId(Long userId) {
+            // 사용자 ID를 기반으로 캐시 키를 생성합니다
+            String cacheKey = cacheKeyGenerator(ALL_POST_IDS, USER_ID, userId.toString());
+        
+            // 캐시에서 게시물 ID 목록을 찾습니다.
+            if (redisService.hasKey(cacheKey)) {
+                return redisService.getSetAsLongListExcludeDummy(cacheKey);
+            }
+        
+            // 캐시에 게시물 ID 목록이 없으면 데이터베이스에서 조회합니다.
+            List<Long> postIds = getPostIdFromRepository(userId);
+        
+            // 조회된 게시물 ID 목록을 캐시에 저장하고 반환합니다.
+            return redisService.cacheListToSetWithDummy(postIds, cacheKey, ONE_DAY_TTL);
+        }
+        ```
+      </details>
+  
+    - **Redis 캐시**를 도입하여 **look-aside** 방식으로 읽기 작업의 속도를 개선하고, **write-back** 및 **write-through** 방식으로 쓰기 작업의 성능을 최적화했습니다.
+    
+      <details>
+        <summary>자세히 보기</summary>
+    
+        자주 수정되지 않는 데이터는 쓰기 전략으로 **write-through** 방식을 사용하여 캐싱하였습니다. 예를 들어, `Post` 저장 시 다음과 같이 구현합니다:
+    
+        ```java
+        @CachePut(value = POST,
+                  key = "T(com.pigeon_stargram.sns_clone.constant.CacheConstants).POST_ID + '_' + #post.id")
+        @Transactional
+        public Post save(Post post) {
+            // 게시물을 데이터베이스에 저장합니다.
+            Post savedPost = repository.save(post);
+    
+            Long postUserId = post.getUser().getId();
+    
+            // 사용자의 모든 게시물 ID 캐시에 반영합니다.
+            String allPostIdsKey = cacheKeyGenerator(ALL_POST_IDS, USER_ID, postUserId.toString());
+            if (redisService.hasKey(allPostIdsKey)) {
+                redisService.addToSet(allPostIdsKey, post.getId(), ONE_DAY_TTL);
+            }
+            //... 추가로직
+    
+            return savedPost;
+        }
+        ```
+    
+        자주 수정되는 데이터는 쓰기 전략으로 **write-back** 방식을 사용하여 캐싱하였습니다. 예를 들어, 읽지 않은 채팅 수를 증가시킬 때는 다음과 같이 구현합니다:
+    
+        ```java
+        @Transactional
+        public Integer increaseUnReadChatCount(Long userId, Long toUserId) {
+            // 캐시 키 생성
+            String cacheKey = cacheKeyGenerator(UNREAD_CHAT_COUNT, USER_ID, userId.toString());
+            String fieldKey = toUserId.toString();
+    
+            // 나중에 비동기적으로 DB에 flush 하도록 Write-back 작업을 위한 Sorted Set에 추가
+            String dirtyKey = combineHashKeyAndFieldKey(cacheKey, fieldKey);
+            redisService.pushToWriteBackSortedSet(dirtyKey);
+    
+            // 캐시에서 값 조회 및 증가
+            if (redisService.hasFieldInHash(cacheKey, fieldKey)) {
+                return incrementUnreadCountInCache(cacheKey, fieldKey, userId, toUserId);
+            }
+    
+            // 캐시 미스 시 DB에서 값 조회 및 캐시에 저장
+            return incrementUnreadCountInDbAndSaveInCache(userId, toUserId, cacheKey, fieldKey);
+        }
+        ```
+    
+      </details>
+
+    
+  - **Write-back 캐시 관리**: LRU 전략에 따라 일정 주기로 캐시에서 오래된 데이터를 데이터베이스에 플러시했습니다. 자주 조회되는 데이터는 캐시에서 계속 사용해 DB에 Flush되지 않고 캐시에만 있는 **starvation**이 발생할 수 있으므로, 체크포인트 시점에는 모든 데이터를 데이터베이스에 플러시하여 데이터베이스와의 일관성을 유지하게 했습니다.
+  
+    <details>
+      <summary>자세히 보기</summary>
+  
+      일정 간격으로 캐시 데이터를 DB에 동기화하는 스케줄러 메서드는 다음과 같이 구현되어 있습니다. 각 주기마다 Redis Sorted Set에서 가장 오래된 데이터를 가져와 DB에 기록합니다. LRU를 구현하기 위해 날짜를 score로 사용한 Sorted Set을 활용했습니다.
+  
+      ```java
+      @Scheduled(fixedRate = 10000)
+      public void syncCacheToDB() {
+          // 한 번에 가져올 Write-Back 작업의 개수 설정
+          Integer writeBackBatchSize = (Integer) redisService.getValue(WRITE_BACK_BATCH_SIZE);
+          if (writeBackBatchSize == null) {
+              writeBackBatchSize = WRITE_BACK_BATCH_SIZE_INIT;
+          }
+  
+          // Redis Sorted Set에서 하위 N개의 값을 가져옴
+          List<String> sortedSetList =
+                  redisService.getAndRemoveBottomNFromSortedSet(WRITE_BACK, writeBackBatchSize, String.class);
+  
+          if (sortedSetList.size() < writeBackBatchSize) {
+              redisService.setValue(WRITE_BACK_BATCH_SIZE, WRITE_BACK_BATCH_SIZE_INIT);
+          }
+  
+          // 각 가져온 키에 대해 DB 기록 처리
+          for (String writeBackKey : sortedSetList) {
+              writeBack(writeBackKey); // 각 키에 대해 writeBack 처리
+          }
+      }
+      ```
+  
+      이때 해당 스케줄러는 여러 서버에서 동시에 발생하므로 `getAndRemoveBottomNFromSortedSet` 메서드는 atomic하게 동작해야 합니다. 이를 위해 Lua 스크립트를 사용하여 atomic하게 처리하였습니다.
+  
+      자주 수정되는 데이터는 LRU 전략에 따라 DB로의 flush가 일어나지 않을 수 있으므로, 체크포인트 시점을 더 길게 설정하여 주기적으로 부스팅을 수행합니다.
+  
+      ```java
+      @Profile("write-back-boost")
+      @Scheduled(fixedRate = 200000)
+      public void syncAllCache() {
+          // 부스팅 시점에는 DB로 flush하는 갯수를 증가시켜 일정 시간 내에 캐시에 dirty key들에 대해 모두 flush가 반드시 일어나게 합니다.
+      }
+      ```
+  
+    </details>
+
 
 </details>
 
 ### 공통2 (자료구조 활용)
 
-#### V1 문제점:
-- DB 엔티티를 사용하여 데이터 처리 및 관리를 하였으나, 성능 최적화에 한계가 있었습니다.
+- **Redis 자료구조**를 활용하여 데이터 처리 속도를 개선했습니다.
 
-#### V2 해결점:
-- Redis의 자료구조를 적극 활용하여 성능을 최적화했습니다.
-  - **Sorted Set**을 사용하여 검색 기록을 효율적으로 관리했습니다.
-  - **Set**을 사용하여 팔로우/팔로잉 유저 목록을 관리하여 빠른 접근이 가능하도록 했습니다.
-  - 그 외...
-<details>
-  <summary>🔧 성능 개선 보기</summary>
-
- TODO
-
-</details>
-
-### 타임라인 (Timeline)
-
-#### V1 문제점:
-- 팔로워의 최신 게시글을 데이터베이스에서 검색하여 타임라인을 생성하는 방식으로 성능 저하가 발생했습니다.
-
-#### V2 해결점:
-- **타임라인 캐시 활용**: 팔로워의 최신 게시글을 데이터베이스에서 가져오는 대신 타임라인 캐시에서 가져오도록 변경했습니다. 특정 유저가 게시글을 작성하면, 그 유저를 팔로우하는 모든 팔로워의 타임라인에 해당 게시글의 ID를 저장합니다. 이렇게 함으로써, 타임라인 조회 시 데이터베이스에 접근하는 대신 캐시에서 게시글 ID를 종합하여 가져오게 됩니다.
-- **유명인 처리**: 유명인이 게시글을 작성할 때는 타임라인 캐시에 게시글을 추가하는 작업이 부하를 증가시킬 수 있어, 유명인 게시글은 데이터베이스에서 직접 가져오는 방식을 유지합니다.
-- **타임라인 병합**: 유저의 타임라인은 타임라인 캐시와 유명인 게시글을 직접 가져온 결과를 병합하여 제공, 이를 통해 조회 성능을 개선하고 데이터베이스 부하를 줄입니다.
-
-<details>
-  <summary>🔧 성능 개선 보기</summary>
+  <details>
+    <summary>🔧 문제점 및 성능 개선 보기</summary>
   
-  TODO
+    #### V1 문제점:
+    - DB 엔티티를 사용하여 데이터 처리 및 관리를 하였으나, 성능 최적화에 한계가 있었습니다.
   
-</details>
-
-### 채팅 (Chat)
-
-#### V1 문제점:
-- V1에서는 단일 서버와 RDBMS를 사용하여 모든 채팅 기록을 불러올 때 모든 내용을 한 번에 불러왔습니다. 이로 인해 데이터베이스의 부하가 증가하고, 서버와 클라이언트 간의 전송 데이터 양이 많아졌습니다.
-- 단일 서버에서는 웹소켓을 통해 실시간 채팅이 가능했지만, 분산 서버 환경에서는 클라이언트가 연결된 서버가 다를 수 있어 웹소켓 연결 문제가 발생했습니다.
-
-#### V2 해결점:
-- **데이터베이스 최적화**: NoSQL 데이터베이스를 사용하여 채팅 기록의 조회 속도를 개선하였습니다. 모든 채팅 기록을 불러오는 대신, ID 기반으로 페이징 처리하여 10개씩 불러오도록 하여 서버와 클라이언트 간의 전송 데이터 양을 줄였습니다.
-- **웹소켓과 분산 서버**: 단일 서버에서는 웹소켓을 직접 사용하여 실시간 채팅을 처리하였지만, 분산 서버 환경에서는 Redis Pub/Sub를 사용하여 서로 다른 서버에 연결된 클라이언트 간의 메시지 전달 문제를 해결하였습니다. 
-
-<details>
-  <summary>🔧 성능 개선 보기</summary>
+    #### V2 해결점:
+    - **Sorted Set**을 사용하여 검색 기록, 자동 완성, 읽지 않은 채팅 수 등을 효율적으로 관리했습니다.
+    
+      <details>
+        <summary>자세히 보기</summary>
+    
+        **검색 기록 관리 예시**: 검색 기록을 Date를 score로 사용하여 Sorted Set을 이용하여 관리하는 방법은 다음과 같습니다.
+    
+        ```java
+        @Transactional(readOnly = true)
+        public List<ResponseSearchHistoryDto> getTopSearchHistory(Long userId) {
+            String cacheKey = cacheKeyGenerator(SEARCH_HISTORY, USER_ID, userId.toString());
+    
+            // 캐시에서 검색 기록을 조회
+            List<ResponseSearchHistoryDto> cachedHistory = getCachedSearchHistory(cacheKey);
+            if (!cachedHistory.isEmpty()) {
+                return cachedHistory;  // 캐시에 검색 기록이 있으면 반환 (캐시 히트)
+            }
+    
+            // 캐시에 데이터가 없으면 DB에서 검색 기록 조회 (캐시 미스)
+            User user = userService.getUserById(userId);
+            List<SearchHistory> searchHistories = searchHistoryRepository.findTop5ByUserOrderByScoreDesc(user);
+    
+            // 검색 기록을 캐시에 저장
+            saveSearchHistoryToCache(cacheKey, searchHistories);
+    
+            // DB에서 가져온 검색 기록을 DTO로 변환하여 반환
+            return searchHistories.stream()
+                    .map(SearchDtoConvertor::toResponseSearchHistoryDto)
+                    .collect(Collectors.toList());
+        }
+        ```
   
-  TODO
+      </details>
+
+    
+    - **Set**을 사용하여 팔로우/팔로잉 유저 Id 목록, 스토리 조회 유저 Id 목록 등을 빠른 접근이 가능하도록 했습니다.
+    
+      <details>
+        <summary>자세히 보기</summary>
+    
+        **팔로워 유저 ID 목록 관리 예시**: `Set`을 활용하여 팔로워 유저 ID 목록을 캐싱하는 방법은 다음과 같습니다.
+    
+        ```java
+        @Transactional(readOnly = true)
+        public List<Long> findFollowerIds(Long userId) {
+            String cacheKey = cacheKeyGenerator(FOLLOWER_IDS, USER_ID, userId.toString());
+    
+            // 캐시에서 가져오기
+            if (redisService.hasKey(cacheKey)) {
+                return redisService.getSetAsLongListExcludeDummy(cacheKey);
+            }
+    
+            // 캐시 미스 : DB에서 가져오기
+            return getFollowerIdsFromDB(userId, cacheKey);
+        }
+        ```
+    
+      </details>
+
+    
+    - **기타 자료구조**: 추가적인 Redis 자료구조(Hash 등)를 사용하여 특정 작업을 최적화했습니다.
+    
+      <details>
+        <summary>자세히 보기</summary>
+    
+        **채팅방에서 유저 관리 예시**: 채팅방에서 사용자가 어느 채팅방에 있는지를 관리하기 위해 Redis Hash를 사용하는 방법은 다음과 같습니다.
+    
+        ```java
+        @EventListener
+        public void handleSessionConnected(SessionConnectEvent event) {
+            StompHeaderAccessor sha = StompHeaderAccessor.wrap(event.getMessage());
+            Long userId = stringToLong(sha.getFirstNativeHeader("user-id"));
+            Long partnerUserId = stringToLong(sha.getFirstNativeHeader("partner-user-id"));
+    
+            if (userId != null && partnerUserId != null) {
+                // Redis Hash에 세션 ID와 사용자 ID를 매핑하여 저장
+                // key: sessionId, value: 사용자 ID
+                redisService.putValueInHash(SESSION_USER_MAP_KEY, sha.getSessionId(), userId);
+    
+                // 두 사용자가 같은 채팅방에서 대화를 나누기 위한 설정
+                // WebSocket 연결 시, Redis Hash에 자신의 사용자 ID와 상대방의 사용자 ID를 매핑하여 저장
+                // HashKey: 나의 userId, fieldKey: 상대방의 userId, value: 접속 상태(true)
+                String activeUsersKey = ACTIVE_USERS_KEY_PREFIX + userId;
+                redisService.putValueInHash(activeUsersKey, String.valueOf(partnerUserId), true);
+    
+                // 사용자 연결 이벤트 발생
+                eventPublisher.publishEvent(new UserConnectEvent(this, userId, partnerUserId));
+            }
+        }
+        ```
+    
+        이 코드는 WebSocket 연결 이벤트를 처리하여 사용자의 세션 ID와 사용자 ID를 Redis Hash에 저장하고, 두 사용자가 같은 채팅방에서 대화하고 있는지를 추적하기 위해 사용자 ID와 상대방의 사용자 ID를 Redis Hash에 매핑합니다.
+    
+      </details>
+
+
+  </details>
+
+
+### 타임라인
+
+- **타임라인 캐시**를 도입하여 팔로워 게시글 조회 성능을 크게 개선했습니다.
+
+  <details>
+    <summary>🔧 문제점 및 성능 개선 보기</summary>
   
-</details>
-
-
-### 알림 (Notification)
-
-#### V1 문제점:
-- V1에서는 알림 작업을 처리하기 위해 별도의 비동기 처리 없이 직접 데이터베이스에 접근하였습니다. 이로 인해 자원을 많이 소모하고, 팔로워가 많은 유명인의 게시글 작성 시 동일한 알림 데이터가 대량으로 생성되어 데이터베이스에 과도한 부하가 발생했습니다.
-
-#### V2 해결점:
-- **비동기 및 병렬 처리**: 알림 전용 워커 스레드를 생성하고, `BRPOP`을 활용하여 메시지 큐에서 블로킹 방식으로 비동기적으로 알림 작업을 처리합니다. 이로 인해 자원을 최소화하면서 여러 서버에서 분산하여 알림 작업을 처리할 수 있게 됩니다.
-- **캐싱 및 데이터베이스 접근 최적화**: 알림 데이터를 `content`와 매핑 정보(수신인, 발신인)로 분리하여, 공통 정보인 `content`는 캐싱하고 매핑 정보만 데이터베이스에 저장하여 동일한 알림 내용이 중복 저장되지 않도록 합니다.
-- **Batch 처리**: 알람을 매번 단일로 저장하면 DB접근 횟수가 많아지므로 알림 생성 시 `batch size`를 설정하여 일정 크기로 나눈 후, 한 번에 `batch size` 만큼의 알림만 데이터베이스에 저장하였습니다. 너무 큰 `batch size`는 데이터베이스 연결 시간을 길어지게 하므로, 적절한 `threshold`를 설정하여 최적화하였습니다.
-- **분산 서버 처리**: 쪼개진 알림은 알림 워커를 통해 Redis Pub/Sub를 사용하여 분산 서버에 웹소켓을 통해 전달하였습니다. 이를 통해 실시간으로 알림을 여러 서버에 분산하여 전달할 수 있습니다.
-
-<details>
-  <summary>🔧 성능 개선 보기</summary>
+    #### V1 문제점:
+    - 팔로워의 최신 게시글을 데이터베이스에서 검색하여 타임라인을 생성하는 방식으로 성능 저하가 발생했습니다.
   
-  TODO
+    #### V2 해결점:
+    - **타임라인 캐시 활용**: 팔로워의 최신 게시글을 데이터베이스에서 가져오는 대신 타임라인 캐시에서 가져오도록 변경했습니다. 특정 유저가 게시글을 작성하면, 그 유저를 팔로우하는 모든 팔로워의 타임라인에 해당 게시글의 ID를 저장합니다. 이렇게 함으로써, 타임라인 조회 시 데이터베이스에 접근하는 대신 캐시에서 게시글 ID를 종합하여 가져오게 됩니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **타임라인 캐시**는 팔로워가 작성한 게시글을 빠르게 조회할 수 있도록 하며, 데이터베이스 접근을 최소화합니다. 게시글 작성 시 해당 게시글의 ID를 모든 팔로워의 타임라인 캐시에 저장하여, 조회 시 효율적으로 게시글을 제공할 수 있습니다.
+      </details>
   
-</details>
-
-### 게시글 작성 (Create Post)
-
-#### V1 문제점:
-- 게시글 작성 시 이미지가 여러 개인 경우, 클라이언트는 서버에 이미지를 업로드하고, **서버는 이미지 파일들을 S3에 저장하며**, 포스트 정보를 데이터베이스에 매핑하여 결과를 받아오는 데 시간이 걸렸습니다. 이로 인해 전체 게시글 작성 시간이 길어져 사용자 경험이 저하되었습니다.
-
-#### V2 해결점:
-- 게시글 작성 시 이미지를 서버에 업로드할 때, **이미지 업로드는 비동기 및 병렬적으로 처리**하여 클라이언트에게는 **즉시 포스트 ID만 반환**하도록 하였습니다.
-- 게시글 작성자는 이미지 업로드 중에도 게시글이 작성된 것처럼 빠르게 느낄 수 있으며, ID를 알고 있기 때문에 댓글, 좋아요 등의 작업도 문제 없이 즉시 수행할 수 있습니다.
-- 다른 사용자는 게시글이 완전히 업로드된 후에만 볼 수 있도록 하여 기존처럼 문제가 없으며, 작성자는 기존보다 빠르게 게시글을 작성하는 것처럼 느끼게 됩니다.
-
-<details>
-  <summary>🔧 성능 개선 보기</summary>
+    - **유명인 처리**: 유명인이 게시글을 작성할 때는 타임라인 캐시에 게시글을 추가하는 작업이 부하를 증가시킬 수 있어, 유명인 게시글은 데이터베이스에서 직접 가져오는 방식을 유지합니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - 유명인의 게시글은 높은 조회 수요로 인해 타임라인 캐시에 직접 추가하는 것이 비효율적일 수 있습니다. 따라서 유명인 게시글은 데이터베이스에서 직접 조회하여, 타임라인 캐시의 부하를 줄이고 데이터베이스에서 안정적으로 관리합니다.
+      </details>
   
-  TODO
+    - **타임라인 병합**: 유저의 타임라인은 타임라인 캐시와 유명인 게시글을 직접 가져온 결과를 병합하여 제공, 이를 통해 조회 성능을 개선하고 데이터베이스 부하를 줄입니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - 유저의 타임라인은 캐시에서 가져온 게시글과 데이터베이스에서 직접 가져온 유명인 게시글을 병합하여 제공합니다. 이 접근 방식은 전체 타임라인 조회 성능을 향상시키고, 데이터베이스의 부하를 효과적으로 줄이는 데 기여합니다.
+      </details>
   
-</details>
+  </details>
 
-### 비밀번호 찾기 (Password Recovery)
+### 채팅
 
-#### V1 문제점:
-- 비밀번호를 찾기 위해 SMTP를 통해 이메일을 직접 보내고, 이메일 전송 완료까지 기다린 후 메일 확인 창으로 이동하는 방식이었습니다. 이로 인해 사용자 경험이 저하되었고, 사용자에게는 이메일이 도착할 때까지 기다려야 하는 불편함이 있었습니다.
+- **NoSQL**과 페이징을 통해 채팅 성능을 최적화하고 **Redis Pub/Sub**를 활용하여 분산 서버 환경 문제를 해결했습니다.
 
-#### V2 해결점:
-- 이메일 전송 작업을 비동기적으로 처리하기 위해, 메일 전용 워커 스레드를 몇 개를 파서 Redis의 `BRPOP`을 사용하여 작업 큐에서 대기하게 하였습니다. `BRPOP`은 블로킹되기 때문에 자원을 거의 소모하지 않으면서도 이메일 보내는 작업이 즉시 처리될 수 있게 합니다.
-- 클라이언트가 비밀번호 찾기 요청을 하면 즉시 확인 창을 응답받을 수 있으며, 이메일 전송 작업은 백그라운드 워커가 비동기적으로 처리하여 사용자에게 더 나은 경험을 제공합니다.
-
-<details>
-  <summary>🔧 성능 개선 보기</summary>
+  <details>
+    <summary>🔧 문제점 및 성능 개선 보기</summary>
   
-  TODO
+    #### V1 문제점:
+    - V1에서는 단일 서버와 RDBMS를 사용하여 모든 채팅 기록을 불러올 때 모든 내용을 한 번에 불러왔습니다. 이로 인해 데이터베이스의 부하가 증가하고, 서버와 클라이언트 간의 전송 데이터 양이 많아졌습니다.
+    - 단일 서버에서는 웹소켓을 통해 실시간 채팅이 가능했지만, 분산 서버 환경에서는 클라이언트가 연결된 서버가 다를 수 있어 웹소켓 연결 문제가 발생했습니다.
   
-</details>
+    #### V2 해결점:
+    - **데이터베이스 최적화**: NoSQL 데이터베이스를 사용하여 채팅 기록의 조회 속도를 개선하였습니다. 모든 채팅 기록을 불러오는 대신, ID 기반으로 페이징 처리하여 10개씩 불러오도록 하여 서버와 클라이언트 간의 전송 데이터 양을 줄였습니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **NoSQL 데이터베이스**를 활용하여 채팅 기록을 효율적으로 저장하고 조회합니다. 페이징 처리 방식으로 한 번에 불러오는 데이터 양을 제한하고, 클라이언트에게 필요한 데이터만을 전송하여 성능을 개선했습니다.
+      </details>
+  
+    - **웹소켓과 분산 서버**: 단일 서버에서는 웹소켓을 직접 사용하여 실시간 채팅을 처리하였지만, 분산 서버 환경에서는 Redis Pub/Sub를 사용하여 서로 다른 서버에 연결된 클라이언트 간의 메시지 전달 문제를 해결하였습니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **Redis Pub/Sub**를 통해 분산 서버 간의 메시지 전달을 효율적으로 처리합니다. 각 서버에서 발생한 메시지를 Redis를 통해 구독하고, 필요한 서버에 전달하여 클라이언트 간의 실시간 채팅이 원활히 이루어지도록 합니다.
+      </details>
+  
+  </details>
+
+### 알림
+
+- **비동기 처리**, **캐싱**, 및 **Batch 처리**를 도입하여 알림 작업의 효율성을 극대화하고, **Redis Pub/Sub**로 분산 서버 환경을 지원했습니다.
+
+  <details>
+    <summary>🔧 문제점 및 성능 개선 보기</summary>
+  
+    #### V1 문제점:
+    - V1에서는 알림 작업을 처리하기 위해 별도의 비동기 처리 없이 직접 데이터베이스에 접근하였습니다. 이로 인해 자원을 많이 소모하고, 팔로워가 많은 유명인의 게시글 작성 시 동일한 알림 데이터가 대량으로 생성되어 데이터베이스에 과도한 부하가 발생했습니다.
+  
+    #### V2 해결점:
+    - **비동기 및 병렬 처리**: 알림 전용 워커 스레드를 생성하고, `BRPOP`을 활용하여 메시지 큐에서 블로킹 방식으로 비동기적으로 알림 작업을 처리합니다. 이로 인해 자원을 최소화하면서 여러 서버에서 분산하여 알림 작업을 처리할 수 있게 됩니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **비동기 처리**: 알림 작업을 별도의 워커 스레드에서 비동기적으로 수행하여 메인 서버의 부하를 줄이고, 알림 전송의 성능을 향상시킵니다. Redis의 `BRPOP` 명령어를 사용하여 큐에서 대기 중인 알림 작업을 블로킹 방식으로 처리합니다.
+      </details>
+  
+    - **캐싱 및 데이터베이스 접근 최적화**: 알림 데이터를 `content`와 매핑 정보(수신인, 발신인)로 분리하여, 공통 정보인 `content`는 캐싱하고 매핑 정보만 데이터베이스에 저장하여 동일한 알림 내용이 중복 저장되지 않도록 합니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **캐싱**: 알림의 공통 정보를 Redis에 캐싱하여 데이터베이스 접근을 줄이고, 반복적인 읽기 작업에서 성능을 개선합니다. 매핑 정보만 데이터베이스에 저장하여 데이터 중복을 방지합니다.
+      </details>
+  
+    - **Batch 처리**: 알림 생성 시 `batch size`를 설정하여 일정 크기만큼 한 번에 알림을 저장함으로써 데이터베이스 접근을 최적화하였습니다. 적절한 `threshold`를 설정하여 과도한 부하를 방지하였습니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **Batch 처리**: 알림 작업을 배치 단위로 처리하여 데이터베이스에 한 번에 여러 알림을 저장함으로써 데이터베이스 접근 횟수를 줄이고 성능을 개선합니다. 적절한 `batch size`를 설정하여 최적의 성능을 유지합니다.
+      </details>
+  
+    - **분산 서버 처리**: 쪼개진 알림은 알림 워커를 통해 Redis Pub/Sub를 사용하여 분산 서버에 웹소켓을 통해 전달하였습니다. 이를 통해 실시간으로 알림을 여러 서버에 분산하여 전달할 수 있습니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **Redis Pub/Sub**: Redis의 Pub/Sub 기능을 사용하여 여러 서버 간의 알림 메시지를 실시간으로 전송합니다. 각 서버는 Redis 채널을 통해 알림 메시지를 구독하고, 클라이언트에게 실시간으로 전달합니다.
+      </details>
+  
+  </details>
 
 
 
+### 게시글 작성
 
+- **비동기 및 병렬 처리**를 도입하여 이미지 업로드 시간을 단축하고, **즉시 포스트 ID 반환**으로 사용자 경험을 개선했습니다.
+
+  <details>
+    <summary>🔧 문제점 및 성능 개선 보기</summary>
+  
+    #### V1 문제점:
+    - 게시글 작성 시 이미지가 여러 개인 경우, 클라이언트는 서버에 이미지를 업로드하고, **서버는 이미지 파일들을 S3에 저장하며**, 포스트 정보를 데이터베이스에 매핑하여 결과를 받아오는 데 시간이 걸렸습니다. 이로 인해 전체 게시글 작성 시간이 길어져 사용자 경험이 저하되었습니다.
+  
+    #### V2 해결점:
+    - 게시글 작성 시 이미지를 서버에 업로드할 때, **이미지 업로드는 비동기 및 병렬적으로 처리**하여 클라이언트에게는 **즉시 포스트 ID만 반환**하도록 하였습니다.
+    - 게시글 작성자는 이미지 업로드 중에도 게시글이 작성된 것처럼 빠르게 느낄 수 있으며, ID를 알고 있기 때문에 댓글, 좋아요 등의 작업도 문제 없이 즉시 수행할 수 있습니다.
+    - 다른 사용자는 게시글이 완전히 업로드된 후에만 볼 수 있도록 하여 기존처럼 문제가 없으며, 작성자는 기존보다 빠르게 게시글을 작성하는 것처럼 느끼게 됩니다.
+  
+  </details>
+
+### 비밀번호 찾기
+
+- **비동기 이메일 전송**을 통해 사용자에게 빠른 응답을 제공하고, **워커 스레드**와 **Redis 큐**를 사용해 이메일 전송을 백그라운드에서 처리했습니다.
+  
+  <details>
+    <summary>🔧 문제점 및 성능 개선 보기</summary>
+  
+    #### V1 문제점:
+    - 비밀번호를 찾기 위해 SMTP를 통해 이메일을 직접 보내고, 이메일 전송 완료까지 기다린 후 메일 확인 창으로 이동하는 방식이었습니다. 이로 인해 사용자 경험이 저하되었고, 사용자에게는 이메일이 도착할 때까지 기다려야 하는 불편함이 있었습니다.
+  
+    #### V2 해결점:
+    - **비동기 이메일 전송**: 이메일 전송 작업을 비동기적으로 처리하기 위해, 메일 전용 워커 스레드를 몇 개를 파서 Redis의 `BRPOP`을 사용하여 작업 큐에서 대기하게 하였습니다. `BRPOP`은 블로킹되기 때문에 자원을 거의 소모하지 않으면서도 이메일 보내는 작업이 즉시 처리될 수 있게 합니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **비동기 처리**: 비밀번호 찾기 요청이 들어오면 즉시 확인 창을 응답하고, 이메일 전송 작업은 백그라운드 워커에서 처리하여 사용자에게 빠른 응답을 제공합니다. Redis의 `BRPOP` 명령어를 통해 비동기적으로 큐에서 작업을 처리합니다.
+      </details>
+  
+    - **워커 스레드와 Redis 큐**: 이메일 전송을 전담하는 워커 스레드를 사용하여, Redis 큐를 통해 이메일 전송 작업을 관리합니다. 이로 인해 이메일 전송 작업이 효율적으로 처리되며, 시스템 자원 사용이 최적화됩니다.
+      <details>
+      <summary>자세히 보기</summary>
+      - **워커 스레드**: 이메일 전송을 담당하는 워커 스레드를 별도로 생성하여 이메일 전송 작업을 백그라운드에서 비동기적으로 처리합니다.
+      - **Redis 큐**: 이메일 전송 요청을 Redis의 큐에 추가하고, 워커 스레드는 이 큐에서 작업을 가져와 처리합니다. `BRPOP` 명령어를 사용하여 큐에서 대기 중인 작업을 블로킹 방식으로 처리합니다.
+      </details>
+  
+  </details>
 
