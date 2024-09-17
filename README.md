@@ -240,7 +240,7 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
 
     </details>
   
-  - **읽지 않은 메시지 수**: 상대가 채팅방에 없을 때 메시지가 오면, 읽지 않은 메시지 수가 실시간으로 쌓이며 확인할 수 있습니다.
+  - **읽지 않은 메시지 수**: 내가 채팅방에 없을 때 상대방에게 메시지가 오면, 읽지 않은 메시지 수가 실시간으로 쌓이며 확인할 수 있습니다.
     
     <details>
       <summary>📷 이미지와 함께 설명 보기</summary>
@@ -1035,15 +1035,104 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
     - 게시글 작성 시 이미지가 여러 개인 경우, 클라이언트는 서버에 이미지를 업로드하고, **서버는 이미지 파일들을 S3에 저장하며**, 포스트 정보를 데이터베이스에 매핑하여 결과를 받아오는 데 시간이 걸렸습니다. 이로 인해 전체 게시글 작성 시간이 길어져 사용자 경험이 저하되었습니다.
   
     #### V2 해결점:
-    - 게시글 작성 시 이미지를 서버에 업로드할 때, **이미지 업로드는 비동기 및 병렬적으로 처리**하여 클라이언트에게는 **즉시 포스트 ID만 반환**하도록 하였습니다.
-    - 게시글 작성자는 이미지 업로드 중에도 게시글이 작성된 것처럼 빠르게 느낄 수 있으며, ID를 알고 있기 때문에 댓글, 좋아요 등의 작업도 문제 없이 즉시 수행할 수 있습니다.
-    - 다른 사용자는 게시글이 완전히 업로드된 후에만 볼 수 있도록 하여 기존처럼 문제가 없으며, 작성자는 기존보다 빠르게 게시글을 작성하는 것처럼 느끼게 됩니다.
+    - **이미지 업로드 비동기 처리**: 게시글 작성 시 이미지를 서버에 업로드할 때, 이미지는 비동기 및 병렬적으로 처리됩니다. 클라이언트에게는 즉시 포스트 ID만 반환되며, 이미지 업로드는 백그라운드에서 진행됩니다. 이를 통해 서버가 이미지를 S3에 저장하는 시간을 줄이게 됩니다.
+      <details>
+        <summary>자세히 보기</summary>
+    
+        ```java
+        @PostMapping
+        public Long createPosts(@LoginUser SessionUser loginUser,
+                                @ModelAttribute RequestCreatePostDto request,
+                                @RequestPart(value = "images", required = false) List<MultipartFile> imagesFile) {
+            // 이미지 파일 저장 처리 (비동기)
+            FileUploadResultDto savedFileDto = fileService.saveFiles(imagesFile);
+    
+            // 이미지 업로드가 진행중이지만, 이미지 이름만 가져와서 바로 다음 단계로 진행
+            List<String> images = savedFileDto.getFileNames();
+            String fieldKey = savedFileDto.getFieldKey();
+            CreatePostDto dto = toCreatePostDto(request, loginUser, images, fieldKey);
+    
+            return postService.createPost(dto);
+        }
+    
+        public FileUploadResultDto saveFiles(List<MultipartFile> files) {
+            // 파일 리스트가 null인 경우 빈 결과를 반환
+            if (files == null) return new FileUploadResultDto();
+    
+            // 고유한 필드 키 생성
+            String fieldKey = generateFieldKey();
+            int totalFiles = files.size();
+            List<String> fileNames = new ArrayList<>();
+    
+            // 각 파일에 대해 비동기 업로드 처리
+            for (MultipartFile file : files) {
+                String fileName = getFilename(file);
+                fileNames.add(fileName);
+                // 비동기 방식으로 파일 업로드
+                fileUploadWorker.uploadFileAsync(file, fileName, fieldKey, totalFiles);
+            }
+    
+            // 업로드된 파일들의 이름과 필드 키를 포함한 결과 반환
+            return new FileUploadResultDto(fileNames, fieldKey);
+        }
+    
+        ```
+    
+        게시글 작성자는 이미지 업로드 중에는 자신의 로컬 이미지를 통해 임시로 프론트에서 게시글을 작성합니다. 이렇게 하면 작성자는 마치 서버에서 이미지를 받아와 게시글이 작성된 것처럼 빠르게 느낄 수 있으며, 동시에 ID를 알고 있기 때문에 임시 게시글에 댓글, 좋아요 등의 작업도 문제 없이 즉시 수행할 수 있습니다.
+    
+      </details>
+
+    - **업로드중 접근 제한**: 다른 사용자는 게시글이 완전히 업로드된 후에만 볼 수 있도록 하여 업로드 중에 봐서 생기는 문제가 없도록 합니다.
+      <details>
+        <summary>자세히 보기</summary>
+    
+        이미지 파일을 업로드하는 워커는 처음에는 이미지 업로드를 수행하는 포스트 ID를 모르기 때문에 임시로 UUID를 통해 포스트 ID를 갖습니다:
+        ```java
+        String fieldKey = generateFieldKey();
+        ```
+    
+        이후, `PostService`의 `createPost` 메서드에서는 post를 DB에 저장한 후 포스트 ID를 Redis 해시에 저장하여 워커가 UUID로 postId를 알 수 있게 합니다:
+        ```java
+        redisService.putValueInHash(UPLOADING_POSTS_HASH, dto.getFieldKey(), savedPost.getId(), 5 * ONE_MINUTE_TTL);
+        ```
+    
+        DB에 저장이 끝났지만 이미지 업로드가 아직 진행 중일 경우(대부분의 경우), 업로드 중인 게시물 ID를 Redis Set에 추가하여 다른 사용자가 이 게시물을 조회하지 못하도록 합니다:
+        ```java
+        // 이미지 업로드가 끝나지 않았을 경우
+        if (!fileUploadWorker.isUploadComplete(dto.getFieldKey())) {
+            // 업로드 중인 게시물 ID를 Set에 추가
+            redisService.addToSet(UPLOADING_POSTS_SET, savedPost.getId(), 5 * ONE_MINUTE_TTL);
+        }
+        ```
+    
+        이미지 파일 업로드 워커는 모든 파일이 업로드되었다면, Redis에서 `fieldKey`에 해당하는 포스트 ID를 가져와 업로드 중인 게시물 Set에서 제거합니다:
+        ```java
+        // 남은 파일이 0이면 모든 파일이 업로드된 것으로 간주
+        if (remainingFiles == 0) {
+            // Redis에서 fieldKey에 해당하는 postId를 가져옴
+            Long postId = redisService.getValueFromHash(UPLOADING_POSTS_HASH, fieldKey, Long.class);
+    
+            if (postId != null) {
+                // Redis의 업로드 진행 Set에서 해당 postId 제거
+                redisService.removeFromSet(UPLOADING_POSTS_SET, postId);
+            }
+    
+            // 모든 파일이 업로드 완료되었으면 진행 상황 맵에서 제거하고 완료 상태로 설정
+            uploadProgressMap.remove(fieldKey);
+            uploadCompletionMap.put(fieldKey, true);
+        }
+        ```
+    
+        이렇게 함으로써, 모든 파일의 업로드가 완료된 후에만 다른 사용자들이 해당 게시물을 조회할 수 있게 됩니다.
+    
+      </details>
+
   
   </details>
 
 ### 비밀번호 찾기
 
-- **비동기 이메일 전송**을 통해 사용자에게 빠른 응답을 제공하고, **워커 스레드**와 **Redis 큐**를 사용해 이메일 전송을 백그라운드에서 처리했습니다.
+- **워커 쓰레드와 작업 메시지 큐**를 통해 이메일 전송을 비동기적으로 백그라운드에서 처리했습니다.
   
   <details>
     <summary>🔧 문제점 및 성능 개선 보기</summary>
@@ -1052,18 +1141,131 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
     - 비밀번호를 찾기 위해 SMTP를 통해 이메일을 직접 보내고, 이메일 전송 완료까지 기다린 후 메일 확인 창으로 이동하는 방식이었습니다. 이로 인해 사용자 경험이 저하되었고, 사용자에게는 이메일이 도착할 때까지 기다려야 하는 불편함이 있었습니다.
   
     #### V2 해결점:
-    - **비동기 이메일 전송**: 이메일 전송 작업을 비동기적으로 처리하기 위해, 메일 전용 워커 스레드를 몇 개를 파서 Redis의 `BRPOP`을 사용하여 작업 큐에서 대기하게 하였습니다. `BRPOP`은 블로킹되기 때문에 자원을 거의 소모하지 않으면서도 이메일 보내는 작업이 즉시 처리될 수 있게 합니다.
+    - **비동기 이메일 전송**: 이메일 전송 작업을 비동기적으로 처리하기 위해, 메일 전용 워커 스레드들이 Redis의 `BRPOP`을 사용하여 작업 큐에서 대기하게 하였습니다. `BRPOP`은 블로킹되기 때문에 자원을 거의 소모하지 않으면서도 이메일 보내는 작업이 즉시 처리될 수 있게 합니다.
       <details>
-      <summary>자세히 보기</summary>
-      - **비동기 처리**: 비밀번호 찾기 요청이 들어오면 즉시 확인 창을 응답하고, 이메일 전송 작업은 백그라운드 워커에서 처리하여 사용자에게 빠른 응답을 제공합니다. Redis의 `BRPOP` 명령어를 통해 비동기적으로 큐에서 작업을 처리합니다.
+        <summary>자세히 보기</summary>
+    
+        **초기화**:
+        ```java
+        /**
+         * 애플리케이션이 준비되면 메일 전송 워커를 실행하는 메서드입니다.
+         */
+        @EventListener(ApplicationReadyEvent.class)
+        public void runMailSenderWorker() {
+            ExecutorService executorService =
+                    Executors.newFixedThreadPool(MAIL_SENDER_WORKER_THREAD_NUM);
+    
+            for (int i = 0; i < MAIL_SENDER_WORKER_THREAD_NUM; i++) {
+                executorService.submit(mailSenderWorker::processTasks);
+            }
+        }
+        ```
+    
+        **워커**:
+        ```java
+        /**
+         * Redis 큐에서 메일 전송 작업을 지속적으로 처리하는 메서드입니다.
+         * 이 메서드는 블로킹 팝을 사용해 Redis 작업 큐에서 메일 전송 작업을 가져오고,
+         * 작업이 있으면 메일을 전송합니다. Redis 연결 문제 또는 타임아웃 발생 시 적절히 재시도합니다.
+         */
+        public void processTasks() {
+            while (true) {
+                try {
+                    // Redis 큐에서 블로킹 방식으로 메일 전송 작업을 가져옴
+                    MailTask task = (MailTask) redisService.popTask(MAIL_QUEUE);
+                    if (task != null) {
+                        // 가져온 작업이 유효하다면 메일을 전송
+                        sendEmail(task);
+                    }
+                } catch (QueryTimeoutException e) {
+                    // Lettuce 클라이언트의 기본 타임아웃(1분)에 도달하면 재연결 시도
+                }
+            }
+        }
+        ```
+    
+        이 설정을 통해 이메일 전송 작업을 비동기적으로 처리하며, 블로킹 방식으로 Redis 큐에서 작업을 대기함으로써 자원 소모를 최소화하고, 이메일 전송 작업을 효율적으로 처리할 수 있습니다.
+    
       </details>
-  
-    - **워커 스레드와 Redis 큐**: 이메일 전송을 전담하는 워커 스레드를 사용하여, Redis 큐를 통해 이메일 전송 작업을 관리합니다. 이로 인해 이메일 전송 작업이 효율적으로 처리되며, 시스템 자원 사용이 최적화됩니다.
-      <details>
-      <summary>자세히 보기</summary>
-      - **워커 스레드**: 이메일 전송을 담당하는 워커 스레드를 별도로 생성하여 이메일 전송 작업을 백그라운드에서 비동기적으로 처리합니다.
-      - **Redis 큐**: 이메일 전송 요청을 Redis의 큐에 추가하고, 워커 스레드는 이 큐에서 작업을 가져와 처리합니다. `BRPOP` 명령어를 사용하여 큐에서 대기 중인 작업을 블로킹 방식으로 처리합니다.
-      </details>
+
   
   </details>
+
+### 검색
+
+- **자동완성 개선**: 자동완성 성능을 개선하기 위해 디바운싱 기법을 적용해 HTTP 요청을 줄이고, 추천 키워드를 Sorted Set을 통해 처리하여 검색 완성도를 높였습니다.
+
+  <details>
+    <summary>🔧 문제점 및 성능 개선 보기</summary>
+  
+    #### V1 문제점:
+    자동완성을 위해 너무 많은 HTTP 요청이 발생하였고, 자동완성을 위한 추천 키워드들을 모두 데이터베이스에서 저장하고 가져와야 했기 때문에 성능이 저하되고 비효율적이었습니다.
+
+    #### V2 해결점:
+   - **디바운싱 기법**: 프론트엔드에서 디바운싱 기법을 적용하여 사용자가 입력한 후 일정 시간 동안 입력이 없으면 HTTP 요청을 한 번만 보내게 하였습니다. 이를 통해 HTTP 요청 횟수를 줄이고 성능을 개선했습니다.
+ 
+   - **Redis Sorted Set 사용**: 추천 키워드는 데이터베이스에서 가져오는 대신, Redis의 Sorted Set을 활용하여 처리합니다. 사용자가 검색할 때마다 해당 검색 키워드에 대해 모든 접두사(prefix)에게 점수를 추가합니다. 이렇게 하면 사용자의 검색 패턴에 따라 자동완성의 완성도가 점진적으로 높아지며, 추천 키워드의 성능이 개선됩니다.
+
+      <details>
+        <summary>자세히 보기</summary>
+
+        **컨트롤러 (검색했을때)**:
+        ```java
+        /**
+         * 검색어를 저장한 후, 사용자 검색 결과를 반환합니다.
+         *
+         * @param loginUser 현재 로그인한 사용자
+         * @param query     검색어
+         * @return 검색된 사용자 정보 리스트
+         */
+        @GetMapping
+        public List<ResponseUserInfoDto> saveSearchInfosAndGetResults(@LoginUser SessionUser loginUser,
+                                                                      @RequestParam String query) {
+            Long userId = loginUser.getId();
+
+            searchService.saveSearchHistory(buildSaveSearchHistoryDto(userId, query));
+
+            return searchService.getUserSearchResults(query);
+        }
+        ```
+
+        **서비스 (검색했을때)**:
+        ```java
+        @Transactional
+        public void saveSearchHistory(SaveSearchHistoryDto dto) {
+            // 중간 로직 생략
+            // 검색어 점수 업데이트 (검색어 자동 완성을 위한 점수 증가)
+            updateSearchTermScores(dto.getSearchQuery());
+        }
+    
+        private void updateSearchTermScores(String term) {
+            // 검색어의 접두사(prefix) 목록 생성
+            List<String> prefixes = generatePrefixes(term);
+    
+            // 각 prefix를 기준으로 해당 검색어의 점수를 업데이트
+            prefixes.forEach(prefix -> {
+                // Redis에 저장할 캐시 키 생성
+                String searchKey = cacheKeyGenerator(SEARCH_TERM_SCORES, prefix);
+                // prefix를 키로 사용하고, 검색어를 값으로 하여 점수를 1 증가시킴
+                redisService.incrementScoreInSortedSet(searchKey, term, 1.0);
+            });
+        }
+        ```
+
+        **자동완성 결과 가져오기**:
+        이제 이 결과를 바탕으로 자동완성은 미완성 검색어 HTTP 요청이 왔을 때 score 값이 높은 상위 term들을 보내줍니다.
+        
+        ```java
+        @GetMapping("/auto-complete")
+        public List<ResponseTopSearchDto> getAutoCompleteResults(@LoginUser SessionUser loginUser,
+                                                                 @RequestParam String prefix) {
+            return searchService.getTopSearchTermsByPrefix(prefix);
+        }
+        ```
+
+      </details>
+  </details>
+
+
+
 
