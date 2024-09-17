@@ -590,21 +590,107 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
     #### V2 해결점:
     - **타임라인 캐시 활용**: 팔로워의 최신 게시글을 데이터베이스에서 가져오는 대신 타임라인 캐시에서 가져오도록 변경했습니다. 특정 유저가 게시글을 작성하면, 그 유저를 팔로우하는 모든 팔로워의 타임라인에 해당 게시글의 ID를 저장합니다. 이렇게 함으로써, 타임라인 조회 시 데이터베이스에 접근하는 대신 캐시에서 게시글 ID를 종합하여 가져오게 됩니다.
       <details>
-      <summary>자세히 보기</summary>
-      - **타임라인 캐시**는 팔로워가 작성한 게시글을 빠르게 조회할 수 있도록 하며, 데이터베이스 접근을 최소화합니다. 게시글 작성 시 해당 게시글의 ID를 모든 팔로워의 타임라인 캐시에 저장하여, 조회 시 효율적으로 게시글을 제공할 수 있습니다.
+        <summary>자세히 보기</summary>
+        
+        게시글을 생성할 때 팔로워의 타임라인(sortedSet)에 작성한 게시글 ID를 추가합니다:
+        ```java
+        @Transactional
+        public Long createPost(CreatePostDto dto) {
+            User loginUser = userService.getUserById(dto.getLoginUserId());
+            Post post = PostFactory.createPost(dto, loginUser);
+            // 중간 로직 생략...
+    
+            // 타임라인 처리
+            addPostToFollowersTimeline(loginUser, savedPost);
+            return savedPost.getId();
+        }
+    
+        private void addPostToFollowersTimeline(User loginUser, Post savedPost) {
+            // 팔로워 수가 많지 않은 경우 팔로워 타임라인에 게시물 추가
+            // 유명인일 경우에는 해당 로직을 실행하지 않음
+            if (!followService.isFamousUser(loginUser.getId())) {
+                // 팔로워 목록 가져오기
+                List<Long> followerIds = followService.getFollowerIds(loginUser.getId());
+    
+                // 현재 시간을 타임스탬프로 사용
+                Double currentTime = getCurrentTimeMillis();
+    
+                // 각 팔로워의 타임라인에 게시물 추가
+                followerIds.forEach(followerId -> {
+                    String timelineKey = cacheKeyGenerator(TIMELINE, USER_ID, followerId.toString());
+                    redisService.addToSortedSet(timelineKey, currentTime, savedPost.getId());
+                });
+            }
+        }
+        ```
+    
+        이제 타임라인을 가져올 때는 타임라인 캐시에서 24시간 이내의 게시글만 가져옵니다:
+        ```java
+        private List<ResponsePostDto> getUnFamousFollowingsRecentPosts(Long userId) {
+            // Redis에서 해당 사용자의 타임라인 키 생성
+            String timelineKey = cacheKeyGenerator(TIMELINE, USER_ID, userId.toString());
+    
+            // 24시간 이전의 시간
+            Double expirationTimeMillis = getTimeMillis(getExpirationTime());
+    
+            // Redis에서 타임라인에 저장된 모든 게시물 ID와 스코어(타임스탬프)를 가져옴
+            List<Long> validPostIds = redisService.getAllFromSortedSetWithScores(timelineKey, Long.class).stream()
+                    .filter(scoreWithValue -> isValidPost(scoreWithValue, timelineKey, expirationTimeMillis)) // 24시간 이내
+                    .map(ScoreWithValue::getValue)
+                    .filter(postId -> !redisService.isMemberOfSet(UPLOADING_POSTS_SET, postId))
+                    .collect(Collectors.toList());
+    
+            // 필터링된 게시물 ID들로 실제 게시물 데이터 가져오기
+            return validPostIds.stream().map(postService::getCombinedPost).collect(Collectors.toList());
+        }
+        ```
+    
       </details>
+
   
-    - **유명인 처리**: 유명인이 게시글을 작성할 때는 타임라인 캐시에 게시글을 추가하는 작업이 부하를 증가시킬 수 있어, 유명인 게시글은 데이터베이스에서 직접 가져오는 방식을 유지합니다.
+    - **유명인 처리**: 유명인이 게시글을 작성할 때는 타임라인 캐시에 게시글을 추가하는 작업이 부하를 증가시킬 수 있어, 유명인 게시글은 유명인의 게시물Id 목록에서 직접 최근 게시물을 조회한 후 가져옵니다
       <details>
-      <summary>자세히 보기</summary>
-      - 유명인의 게시글은 높은 조회 수요로 인해 타임라인 캐시에 직접 추가하는 것이 비효율적일 수 있습니다. 따라서 유명인 게시글은 데이터베이스에서 직접 조회하여, 타임라인 캐시의 부하를 줄이고 데이터베이스에서 안정적으로 관리합니다.
+        <summary>자세히 보기</summary>
+        
+        유명인의 최신 게시글을 가져오는 방법은 다음과 같습니다:
+        ```java
+        private List<ResponsePostDto> getFamousFollowingsRecentPosts(Long userId) {
+            // 유명인은 타임라인 캐시에서가 아니라 최신 게시물들을 직접 조회
+            return followService.findFollowings(userId).stream()
+                    .map(ResponseFollowerDto::getId)
+                    .filter(followService::isFamousUser) // 유명인만 필터링
+                    .flatMap(followingId -> postService.getRecentPostsByUser(followingId).stream())
+                    .collect(Collectors.toList());
+        }
+        ```
+    
       </details>
+
   
-    - **타임라인 병합**: 유저의 타임라인은 타임라인 캐시와 유명인 게시글을 직접 가져온 결과를 병합하여 제공, 이를 통해 조회 성능을 개선하고 데이터베이스 부하를 줄입니다.
-      <details>
+  - **타임라인 병합**: 유저의 타임라인은 타임라인 캐시와 유명인 게시글을 직접 가져온 결과를 병합하여 제공, 이를 통해 조회 성능을 개선하고 데이터베이스 부하를 줄입니다.
+    <details>
       <summary>자세히 보기</summary>
-      - 유저의 타임라인은 캐시에서 가져온 게시글과 데이터베이스에서 직접 가져온 유명인 게시글을 병합하여 제공합니다. 이 접근 방식은 전체 타임라인 조회 성능을 향상시키고, 데이터베이스의 부하를 효과적으로 줄이는 데 기여합니다.
-      </details>
+  
+      유저의 팔로우 대상 게시물들을 병합하여 최신 게시글을 가져오는 방법은 다음과 같습니다:
+      ```java
+      public List<ResponsePostDto> getFollowingUsersRecentPosts(Long userId) {
+          // 1. 유명인 팔로우 대상의 게시물 가져오기
+          List<ResponsePostDto> famousPosts = getFamousFollowingsRecentPosts(userId);
+  
+          // 2. 비유명인 팔로우 대상의 게시물 가져오기
+          List<ResponsePostDto> unFamousPosts = getUnFamousFollowingsRecentPosts(userId);
+  
+          // 3. 두 리스트를 합치고, 시간 기준으로 정렬하여 반환
+          return Stream.concat(famousPosts.stream(), unFamousPosts.stream())
+                  .sorted(Comparator.comparing(
+                          post -> post.getProfile().getTime(),
+                          getReverseOrderComparator()))
+                  .collect(Collectors.toList());
+      }
+      ```
+  
+    </details>
+
   
   </details>
 
@@ -620,16 +706,98 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
     - 단일 서버에서는 웹소켓을 통해 실시간 채팅이 가능했지만, 분산 서버 환경에서는 클라이언트가 연결된 서버가 다를 수 있어 웹소켓 연결 문제가 발생했습니다.
   
     #### V2 해결점:
-    - **데이터베이스 최적화**: NoSQL 데이터베이스를 사용하여 채팅 기록의 조회 속도를 개선하였습니다. 모든 채팅 기록을 불러오는 대신, ID 기반으로 페이징 처리하여 10개씩 불러오도록 하여 서버와 클라이언트 간의 전송 데이터 양을 줄였습니다.
+    - **데이터베이스 최적화**: NoSQL 데이터베이스를 사용하여 채팅 기록의 조회 속도를 개선하였습니다. 모든 채팅 기록을 불러오는 대신, 날짜를 기반으로 페이징 처리하여 10개씩 불러오도록 하여 서버와 클라이언트 간의 전송 데이터 양을 줄였습니다.
       <details>
-      <summary>자세히 보기</summary>
-      - **NoSQL 데이터베이스**를 활용하여 채팅 기록을 효율적으로 저장하고 조회합니다. 페이징 처리 방식으로 한 번에 불러오는 데이터 양을 제한하고, 클라이언트에게 필요한 데이터만을 전송하여 성능을 개선했습니다.
+        <summary>자세히 보기</summary>
+        
+        먼저 `Chat` 엔티티를 MongoDB의 Document로 전환합니다:
+        ```java
+        public interface ChatRepository extends MongoRepository<Chat, String> {
+            List<Chat> findChatsBefore(Long user1Id, Long user2Id, LocalDateTime lastFetchedDateTime, Pageable pageable);
+        }
+        ```
+    
+        그리고 프론트에서 현재 가지고 있는 가장 오래된 채팅의 날짜를 기준으로 최대 10개의 채팅 데이터들만 가져오도록 합니다:
+        ```java
+        @Transactional(readOnly = true)
+        public ResponseChatHistoriesDto getUserChats(GetUserChatsDto dto, String lastFetchedTime, Integer size) {
+            Long user1Id = dto.getUser1Id();
+            Long user2Id = dto.getUser2Id();
+    
+            // 마지막 조회 시간을 LocalDateTime 형식으로 변환
+            LocalDateTime lastFetchedDateTime = getChatLocalDateTime(lastFetchedTime);
+    
+            // 페이지 정보 생성 (size + 1개의 메시지를 내림차순으로 가져옴)
+            Pageable pageable = createPageable(size + 1);
+    
+            // 데이터베이스에서 size + 1개의 메시지 조회
+            List<Chat> chats = chatRepository.findChatsBefore(user1Id, user2Id, lastFetchedDateTime, pageable);
+    
+            // size+1개 중에서 size개만 반환하고, size+1번째 데이터가 있으면 hasMoreChat을 true로 설정
+            Boolean hasMoreChat = chats.size() > size;
+            List<Chat> limitedChats = chats.subList(0, Math.min(chats.size(), size));
+    
+            // 메시지를 DTO로 변환
+            List<ResponseChatHistoryDto> chatHistoryDtos = toChatHistoryDtos(limitedChats);
+    
+            return new ResponseChatHistoriesDto(chatHistoryDtos, hasMoreChat);
+        }
+        ```
+    
+        `ChatRepository`에서 `findChatsBefore` 메서드를 통해 페이징 처리된 채팅 기록을 조회하고, 프론트엔드에 필요한 데이터만 전송하여 성능을 최적화합니다.
+    
       </details>
+
   
     - **웹소켓과 분산 서버**: 단일 서버에서는 웹소켓을 직접 사용하여 실시간 채팅을 처리하였지만, 분산 서버 환경에서는 Redis Pub/Sub를 사용하여 서로 다른 서버에 연결된 클라이언트 간의 메시지 전달 문제를 해결하였습니다.
       <details>
-      <summary>자세히 보기</summary>
-      - **Redis Pub/Sub**를 통해 분산 서버 간의 메시지 전달을 효율적으로 처리합니다. 각 서버에서 발생한 메시지를 Redis를 통해 구독하고, 필요한 서버에 전달하여 클라이언트 간의 실시간 채팅이 원활히 이루어지도록 합니다.
+        <summary>자세히 보기</summary>
+        
+        각 서버는 서버 시작 시 Redis 채널을 구독합니다:
+        ```java
+        @PostConstruct
+        public void init() {
+            redisService.subscribeToPattern("chat.*.*", chatMessageListener);  // 채팅 메시지 구독
+            // 추가 로직
+        }
+        ```
+    
+        메시지 리스너는 Redis에서 발행된 메시지를 수신하고, 웹소켓을 통해 클라이언트에 전송합니다:
+        ```java
+        public class RedisChatMessageListener implements MessageListener {
+    
+            private final RedisService redisService;
+            private final SimpMessagingTemplate messagingTemplate;
+    
+            @Override
+            public void onMessage(Message message, byte[] pattern) {
+                NewChatDto chatMessage = redisService.deserializeMessage(message.getBody(), NewChatDto.class);
+    
+                long user1Id = Math.min(chatMessage.getFrom(), chatMessage.getTo());
+                long user2Id = Math.max(chatMessage.getFrom(), chatMessage.getTo());
+    
+                // 채팅방 경로를 생성하고 메시지를 해당 경로로 전송
+                String destination = "/topic/chat/" + user1Id + "/" + user2Id;
+                messagingTemplate.convertAndSend(destination, chatMessage);
+            }
+        }
+        ```
+    
+        이제 웹소켓으로 직접 메시지를 보내는 대신, Redis 채널에 메시지를 발행합니다:
+        ```java
+        private void processChatMessage(NewChatDto chatMessage, Long from, Long to) {
+            // 메시지의 시간을 설정하고 저장
+            chatMessage.setTime(getCurrentFormattedTime());
+            chatService.save(chatMessage);
+    
+            // Redis 채널에 메시지 발행
+            String channel = getChatChannelName(from, to);
+            redisService.publishMessage(channel, chatMessage);
+        }
+        ```
+    
+        이 방식으로 메시지가 Redis를 통해 전달되고, 각 서버는 Redis를 통해 받은 메시지를 웹소켓으로 클라이언트에 전송하여 분산 서버 환경에서도 실시간 채팅을 처리합니다.
+    
       </details>
   
   </details>
@@ -647,26 +815,178 @@ PigeonStargram은 인스타그램의 기능들을 구현하는 것을 목표로 
     #### V2 해결점:
     - **비동기 및 병렬 처리**: 알림 전용 워커 스레드를 생성하고, `BRPOP`을 활용하여 메시지 큐에서 블로킹 방식으로 비동기적으로 알림 작업을 처리합니다. 이로 인해 자원을 최소화하면서 여러 서버에서 분산하여 알림 작업을 처리할 수 있게 됩니다.
       <details>
-      <summary>자세히 보기</summary>
-      - **비동기 처리**: 알림 작업을 별도의 워커 스레드에서 비동기적으로 수행하여 메인 서버의 부하를 줄이고, 알림 전송의 성능을 향상시킵니다. Redis의 `BRPOP` 명령어를 사용하여 큐에서 대기 중인 알림 작업을 블로킹 방식으로 처리합니다.
+        <summary>자세히 보기</summary>
+    
+        알림 전송 워커를 비동기적으로 처리하기 위한 설정 방법은 다음과 같습니다:
+        ```java
+        /**
+         * 애플리케이션이 준비되면 알림 전송 워커를 실행하는 메서드입니다.
+         */
+        @EventListener(ApplicationReadyEvent.class)
+        public void runNotificationWorker() {
+            ExecutorService executorService =
+                    Executors.newFixedThreadPool(NOTIFICATION_WORKER_THREAD_NUM);
+    
+            for (int i = 0; i < NOTIFICATION_WORKER_THREAD_NUM; i++) {
+                executorService.submit(notificationWorker::acceptTask);
+            }
+        }
+    
+        public void acceptTask() {
+            while (true) {
+                try {
+                    // Redis 작업 큐에서 Blocking Pop 방식으로 작업을 가져옴
+                    Object task = redisService.popTask(NOTIFICATION_QUEUE);
+                    NotificationBatchDto batch = (NotificationBatchDto) task;
+    
+                    // 가져온 작업이 유효하다면 작업 수행
+                    if (batch != null) {
+                        work(batch);
+                    }
+                } catch (Exception e) {
+                    // 예외 처리
+                }
+            }
+        }
+        ```
+    
       </details>
-  
+
     - **캐싱 및 데이터베이스 접근 최적화**: 알림 데이터를 `content`와 매핑 정보(수신인, 발신인)로 분리하여, 공통 정보인 `content`는 캐싱하고 매핑 정보만 데이터베이스에 저장하여 동일한 알림 내용이 중복 저장되지 않도록 합니다.
       <details>
-      <summary>자세히 보기</summary>
-      - **캐싱**: 알림의 공통 정보를 Redis에 캐싱하여 데이터베이스 접근을 줄이고, 반복적인 읽기 작업에서 성능을 개선합니다. 매핑 정보만 데이터베이스에 저장하여 데이터 중복을 방지합니다.
+        <summary>자세히 보기</summary>
+    
+        `NotificationV2`에서는 `content`를 별도의 엔티티로 분리하여 공통적인 알림 내용은 데이터베이스에 한번만 저장되도록 하고, 매핑 정보만 별도로 저장합니다:
+        ```java
+        public class NotificationV2 extends BaseTimeEntity { 
+        
+            @Id
+            @GeneratedValue(strategy = GenerationType.IDENTITY)
+            private Long id;
+        
+            @ManyToOne(fetch = FetchType.LAZY)
+            @JoinColumn(name = "content_id")
+            private NotificationContent content; // 알림의 상세 내용과 연관된 엔티티
+        
+            private Long recipientId;
+            private Boolean isRead; // 알림의 읽음 여부 (true: 읽음, false: 안 읽음)
+        
+            public void setRead(Boolean read) {
+                isRead = read;
+            }
+        }
+        ```
+    
+        공통적인 `content`는 캐시를 활용하여 데이터베이스 접근을 최소화합니다:
+        ```java
+        @Cacheable(value = NOTIFICATION_CONTENT,
+                   key = "T(com.pigeon_stargram.sns_clone.constant.CacheConstants).NOTIFICATION_CONTENT_ID + '_' + #contentId")
+        @Transactional(readOnly = true)
+        public NotificationContent findContentById(Long contentId) {
+            return notificationContentRepository.findById(contentId)
+                    .orElseThrow(() -> new NotificationNotFoundException(NOTIFICATION_CONTENT_NOT_FOUND_ID));
+        }
+        ```
+    
       </details>
+
   
     - **Batch 처리**: 알림 생성 시 `batch size`를 설정하여 일정 크기만큼 한 번에 알림을 저장함으로써 데이터베이스 접근을 최적화하였습니다. 적절한 `threshold`를 설정하여 과도한 부하를 방지하였습니다.
       <details>
-      <summary>자세히 보기</summary>
-      - **Batch 처리**: 알림 작업을 배치 단위로 처리하여 데이터베이스에 한 번에 여러 알림을 저장함으로써 데이터베이스 접근 횟수를 줄이고 성능을 개선합니다. 적절한 `batch size`를 설정하여 최적의 성능을 유지합니다.
+        <summary>자세히 보기</summary>
+    
+        `NotificationSplitWorker`는 알림을 분할하는 작업을 수행하고, 분할된 알림 작업을 `NotificationWorker`에 위임합니다.
+    
+        애플리케이션이 준비되면 알림 분할 워커를 실행하는 메서드:
+        ```java
+        @EventListener(ApplicationReadyEvent.class)
+        public void runNotificationSplitWorker() {
+            ExecutorService executorService =
+                    Executors.newFixedThreadPool(NOTIFICATION_SPLIT_WORKER_THREAD_NUM);
+    
+            for (int i = 0; i < NOTIFICATION_SPLIT_WORKER_THREAD_NUM; i++) {
+                executorService.submit(notificationSplitWorker::acceptTask);
+            }
+        }
+        ```
+    
+        알림 분할 작업을 처리하는 메서드:
+        ```java
+        @Transactional
+        public void acceptTask() {
+            while (true) {
+                try {
+                    // Local 작업큐에서 Blocking Pop 방식으로 가져옴
+                    NotificationSplitDto beforeSplit = beforeSplitQueue.take();
+    
+                    // 가져온 작업이 유효하다면 알림을 BATCH_SIZE로 분할
+                    work(beforeSplit);
+                } catch (Exception e) {
+                    log.error("알림 분할 작업 처리 중 예외가 발생했습니다.", e);
+                }
+            }
+        }
+        ```
+    
+        알림을 분할하고, 분할된 작업을 `NotificationWorker`에게 위임하는 메서드:
+        ```java
+        @Override
+        public void work(Object task) {
+            // 중간 로직 생략
+            for (int i = 0; i < iterationMax; i++) {
+                int leftIndex = i * BATCH_SIZE;
+                int rightIndex = (i == iterationMax - 1) ? recipientIds.size() : (i + 1) * BATCH_SIZE;
+                // 중간 로직 생략
+                // BATCH_SIZE로 분할된 알림을 NotificationWorker에게 일을 위임한다
+                notificationWorker.enqueue(notificationBatchDto);
+            }
+        }
+        ```
+    
+        `NotificationWorker`는 분할된 알림을 한 번에 DB에 저장한 후 웹소켓을 통해 실시간으로 전송합니다:
+        ```java
+        notificationCrudService.saveAll(notifications);
+        // 이후 notification을 publish
+        ```
+    
       </details>
+
   
     - **분산 서버 처리**: 쪼개진 알림은 알림 워커를 통해 Redis Pub/Sub를 사용하여 분산 서버에 웹소켓을 통해 전달하였습니다. 이를 통해 실시간으로 알림을 여러 서버에 분산하여 전달할 수 있습니다.
       <details>
-      <summary>자세히 보기</summary>
-      - **Redis Pub/Sub**: Redis의 Pub/Sub 기능을 사용하여 여러 서버 간의 알림 메시지를 실시간으로 전송합니다. 각 서버는 Redis 채널을 통해 알림 메시지를 구독하고, 클라이언트에게 실시간으로 전달합니다.
+        <summary>자세히 보기</summary>
+    
+        각 서버는 서버 시작 시 Redis 채널을 구독합니다:
+        ```java
+        @PostConstruct
+        public void init() {
+            redisService.subscribeToPattern("notification.*", notificationListener);  // 알림 구독
+            // 추가 로직
+        }
+        ```
+    
+        메시지 리스너는 Redis에서 발행된 메시지를 수신하고, 웹소켓을 통해 클라이언트에 전송합니다:
+        ```java
+        public class RedisNotificationListener implements MessageListener {
+    
+            private final RedisService redisService;
+            private final SimpMessagingTemplate messagingTemplate;
+    
+            @Override
+            public void onMessage(Message message, byte[] pattern) {
+                ResponseNotificationDto messageDto = redisService.deserializeMessage(message.getBody(), ResponseNotificationDto.class);
+    
+                // 알림을 보낼 경로를 설정하고 메시지를 해당 경로로 전송
+                String destination = "/topic/notification/" + messageDto.getTargetUserId();
+                messagingTemplate.convertAndSend(destination, messageDto);
+            }
+        }
+        ```
+    
+        이제 웹소켓으로 직접 메시지를 보내는 대신, Redis 채널에 메시지를 발행합니다.
+      
+        이 방식으로 메시지가 Redis를 통해 전달되고, 각 서버는 Redis를 통해 받은 메시지를 웹소켓으로 클라이언트에 전송하여 분산 서버 환경에서도 실시간 알림을 처리합니다.
+    
       </details>
   
   </details>
